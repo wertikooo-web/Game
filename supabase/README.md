@@ -1,30 +1,45 @@
 # Realtime backend contract
 
-The browser subscribes only to safe aggregate state: `rooms`, `players`, `confessions`. Raw `answers` are write-only from the public client's perspective and are aggregated by trusted server code.
+Production uses one Supabase Edge Function: `game-api` (v13 as of 2026-10-03).
 
-## Edge functions to deploy
+The browser reads only public room/player/confession views. Raw anonymous answers stay server-side. Mutations go through `game-api` with player/host tokens.
 
-`create-room`: creates a room and host player, returns room code, room id, host token and player token.
+## Supported game flows
 
-`join-room`: accepts room code + display name, returns player id/token and current public room state.
+### Classic solo
+`lobby -> vote -> bet -> reveal -> next round / finished`
 
-`vote`: accepts player token + boolean answer. Upserts one answer for current round. Returns only submitted status and total submitted count, never individual answers.
+Players answer YES/NO anonymously, then predict the total YES count. Scoring: exact = +2, off by 1 = +1, otherwise 0.
 
-`predict`: accepts player token + integer guess. Upserts one prediction for current round.
+### Classic teams
+`lobby -> vote -> team_bet -> reveal -> next round / finished`
 
-`advance`: host-only. Moves vote -> bet when all active players voted; bet -> reveal when all predicted. On reveal it counts YES server-side, writes only `rooms.yes_count`, calculates 3/2/1/0 points, updates player scores, and broadcasts safe room state. From reveal -> next round or finished.
+Teams are balanced on join. A rotating captain submits the team prediction.
 
-`confess`: player may voluntarily expose only their own answer for the current revealed round.
+### Classic couples
+`lobby -> vote -> pair_predict -> reveal -> next round / finished`
+
+Every player is linked to one partner and predicts that partner's YES/NO answer.
+
+### Who Knows Whom
+`lobby -> vote -> know_predict -> know_reveal -> next round / finished`
+
+Each player answers privately, then predicts every other player's YES/NO answer. Each correct prediction is worth 1 point.
+
+## Main API actions
+
+`create`, `join`, `lobby_info`, `set_expected_players`, `set_partner`, `vote`, `predict`, `team_predict`, `pair_predict`, `know_predict`, `know_result`, `confess`, `advance`, `restart`, `health`.
 
 ## Security invariants
 
-1. Never expose `service_role` to browser code.
-2. Never grant SELECT on `answers`.
-3. Never include another player's `player_token` in public realtime payloads.
-4. Host controls stage changes with `host_token`.
-5. Server derives room/player from tokens and ignores client-supplied score, yes_count or points.
-6. Rate-limit joins and mutations before public launch.
+1. Never expose `service_role` in browser code.
+2. Raw `answers` and private prediction tables are protected by RLS.
+3. Public views never expose `host_token` or `player_token`.
+4. Host-only mutations validate `host_token` server-side.
+5. Scores, answer counts and stage transitions are derived server-side.
+6. `pair_links` has RLS enabled; pair data is returned through `lobby_info`.
+7. Before a broad public launch, add abuse/rate limiting for room creation and joins.
 
-## Frontend environment
+## Production migration
 
-The browser only needs `SUPABASE_URL` and the public anon/publishable key. These are safe to ship when RLS and server mutations are configured correctly.
+The current multiplayer stage constraint and public room view are documented in `migrations/20261003_stabilize_multiplayer.sql`.
